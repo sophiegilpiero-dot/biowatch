@@ -85,6 +85,89 @@ KOREAN_COMPANIES = [
     "scancell",
     "inventis",
     "boeringer",
+
+    # 진단/체외진단
+    "seegene", "씨젠",
+    "sd biosensor", "sdbiosensor", "sd바이오센서",
+    "sugentech", "수젠텍",
+    "i-sens", "아이센스",
+    "nanoentek", "나노엔텍",
+    "optolane", "옵토레인",
+    "genematrix", "진매트릭스",
+    "precisionbio", "프리시젼바이오",
+    "biocore", "바이오코아",
+    "biosys", "바이오시스",
+    "eone laboratories", "이원다이애그노믹스",
+    "gencurix", "젠큐릭스",
+    "biosensor",
+
+    # AI 헬스케어/디지털헬스
+    "vuno", "뷰노",
+    "lunit", "루닛",
+    "deepnoid", "딥노이드",
+    "medipixel", "메디픽셀",
+    "coreline soft", "코어라인소프트",
+    "heuron", "휴런",
+    "claripi", "클라리파이",
+    "hutom", "휴텀",
+    "kakao healthcare", "kakaohealth",
+    "niracare",
+
+    # 항체/단백질/세포치료
+    "abl bio", "ablbio", "에이비엘바이오",
+    "aprilbio", "에이프릴바이오",
+    "anterogen", "안트로젠",
+    "nature cell", "네이처셀",
+    "cgbio", "cg bio",
+    "biosolution", "바이오솔루션",
+    "curebio", "큐어바이오",
+    "imbiologics", "im biologics",
+    "immunomedics korea",
+
+    # 유전자/플랫폼/정밀의료
+    "toolgen", "툴젠",
+    "theragen etex", "테라젠이텍스",
+    "theragen", "테라젠",
+    "insilicogen", "인실리코젠",
+    "genome insight",
+    "3billion", "three billion",
+    "dxvx",
+    "eubiologics", "유바이오로직스",
+
+    # CDMO/원료의약품
+    "humedix", "휴메딕스",
+    "sk pharmteco", "sk pharmaco",
+    "hanmi science", "한미사이언스",
+
+    # 미용/의료기기
+    "classys", "클래시스",
+    "jeisys medical", "jeisys", "제이시스메디칼",
+    "lutronic", "루트로닉",
+    "wontech", "원텍",
+    "ilooda", "일루다",
+
+    # 정형외과/재생의학
+    "kolon tissue gene", "코오롱티슈진",
+    "osteon", "오스테온",
+
+    # 기타 주요 바이오텍
+    "selecxine", "셀렉사인",
+    "hanall", "한올",
+    "jw bioscience",
+    "biotheus",
+    "genome & company",
+    "inventisbio",
+    "pharos ibio", "파로스아이바이오",
+    "onconova",
+    "genosco",
+    "olipass", "올리패스",
+    "abion", "에이비온",
+    "tiumbio", "티움바이오",
+    "medpacto", "메드팩토",
+    "gi innovation", "지아이이노베이션",
+    "bridge biotherapeutics", "브릿지바이오테라퓨틱스",
+    "inventage", "인벤티지랩",
+    "curigin", "큐리진",
 ]
 
 # 한국 기관/병원 (공동 스폰서로 등장하는 경우)
