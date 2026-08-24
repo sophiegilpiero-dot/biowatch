@@ -49,3 +49,21 @@ jobs:
         with:
           path: data/seen.db
           key: biowatch-seen-db-${{ github.run_id }}
+  keep-alive:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: 30일마다 빈 커밋으로 액션 유지
+        run: |
+          git config user.email "biowatch-bot@github.com"
+          git config user.name "BioWatch Bot"
+          LAST=$(git log -1 --format="%ct")
+          NOW=$(date +%s)
+          DAYS=$(( (NOW - LAST) / 86400 ))
+          if [ $DAYS -ge 30 ]; then
+            git commit --allow-empty -m "chore: keep-alive [skip ci]"
+            git push
+          fi
