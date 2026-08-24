@@ -12,6 +12,8 @@ EMOJI = {
     "clinicaltrials": "🧪",
     "sec": "📋",
     "mfds": "💊",
+    "euctr": "🇪🇺",
+    "ema": "🏥",
     "error": "🚨",
     "summary": "📊",
 }
@@ -20,6 +22,8 @@ SOURCE_LABEL = {
     "clinicaltrials": "ClinicalTrials.gov",
     "sec": "SEC EDGAR",
     "mfds": "의약품안전나라",
+    "euctr": "EUCTR (유럽 임상시험)",
+    "ema": "EMA (유럽 의약품청)",
 }
 
 
@@ -46,10 +50,6 @@ def _send(text: str) -> bool:
 
 
 def send_alert(source: str, item: dict) -> bool:
-    """
-    공시 알림 발송
-    item 필수 키: title, url, summary, matched_keyword, date
-    """
     emoji = EMOJI.get(source, "📌")
     label = SOURCE_LABEL.get(source, source.upper())
     
@@ -73,13 +73,10 @@ def send_alert(source: str, item: dict) -> bool:
 
 
 def send_summary(counts: dict) -> bool:
-    """
-    30분마다 실행 후 요약 리포트 (신규 건 없을 때도 발송 옵션)
-    """
     total = sum(counts.values())
     if total == 0:
-        return True  # 신규 없으면 요약 생략
-    
+        return True
+
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
     lines = [
         f"📊 <b>BioWatch 스캔 완료</b> ({now})",
