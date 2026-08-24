@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '*/30 * * * *'
   workflow_dispatch:
+    inputs:
+      hours:
+        description: '몇 시간 이전부터 스캔 (기본: 2, 테스트용 48 입력 가능)'
+        required: false
+        default: '2'
 
 jobs:
   watch:
@@ -36,7 +41,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           MFDS_API_KEY: ${{ secrets.MFDS_API_KEY }}
-        run: python main.py
+        run: python main.py --hours ${{ github.event.inputs.hours || '2' }}
 
       - name: 캐시 저장 (seen.db)
         if: always()
