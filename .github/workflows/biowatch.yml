@@ -1,0 +1,46 @@
+name: BioWatch — 한국 바이오/제약 공시 추적
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt
+
+      - name: 캐시 복원 (seen.db)
+        uses: actions/cache@v4
+        with:
+          path: data/seen.db
+          key: biowatch-seen-db-${{ github.run_id }}
+          restore-keys: |
+            biowatch-seen-db-
+
+      - name: BioWatch 실행
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MFDS_API_KEY: ${{ secrets.MFDS_API_KEY }}
+        run: python main.py
+
+      - name: 캐시 저장 (seen.db)
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: data/seen.db
+          key: biowatch-seen-db-${{ github.run_id }}
