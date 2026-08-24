@@ -1,85 +1,353 @@
 """
-BioWatch 메인 실행 스크립트
-GitHub Actions에서 30분마다 실행
-
-사용법:
-  python main.py              # 기본 (2시간 lookback)
-  python main.py --hours 48   # 최근 48시간 수동 스캔
+BioWatch v2 — 한국 바이오/제약 공시 추적 (단일 파일)
+소스: ClinicalTrials.gov / SEC EDGAR / CTIS(유럽)
+사용법: python main.py --hours 48
 """
-import sys
 import argparse
+import hashlib
+import json
+import os
+import re
+import sqlite3
+import sys
+import time
 import traceback
-from datetime import datetime
-from src.crawl_clinicaltrials import fetch_and_notify as ct_fetch
-from src.crawl_sec import fetch_and_notify as sec_fetch
-from src.crawl_mfds import fetch_and_notify as mfds_fetch
-from src.crawl_europe import fetch_euctr_and_notify, fetch_ema_and_notify
-from src.telegram_notify import send_summary, send_error
+from datetime import datetime, timedelta
+from pathlib import Path
 
-DEFAULT_LOOKBACK_HOURS = 2
+import requests
+
+# ─────────────────────────────────────────────
+# 설정
+# ─────────────────────────────────────────────
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+DB_PATH = Path(__file__).parent / "data" / "seen.db"
+
+UA = {"User-Agent": "BioWatch research (biowatch.tracker@gmail.com)"}
+
+# 한국 기업/기관 키워드 (영문 위주 — 해외 공시는 영문)
+KOREAN_KEYWORDS = [
+    # 대형
+    "celltrion", "samsung bioepis", "samsung biologics", "sk bioscience",
+    "sk biopharm", "sk life science", "lg chem", "lotte biologics",
+    "yuhan", "hanmi", "daewoong", "boryung", "ildong", "chong kun dang",
+    "chongkundang", "dong-a st", "dongbang", "jw pharmaceutical",
+    "gc biopharma", "gc pharma", "green cross", "hk inno",
+    "samjin pharm", "kwangdong", "huons", "hyundai pharm",
+    # 바이오텍
+    "hugel", "medytox", "genexine", "alteogen", "helixmith",
+    "kolon life science", "kolon tissuegene", "kolon tissue gene",
+    "bridge biotherapeutics", "tiumbio", "medpacto", "gi innovation",
+    "hanall", "aprilbio", "abl bio", "ablbio", "y-biologics",
+    "kangstem", "anterogen", "nature cell", "toolgen", "olipass",
+    "pharos ibio", "abion", "eubiologics", "cellid", "curigin",
+    "aribio", "cha biotech", "cha vaccine", "binex", "genosco",
+    "oncobix", "selecxine", "vaxcell", "imbiologics",
+    # 진단/AI/기기
+    "seegene", "sd biosensor", "sugentech", "i-sens", "nanoentek",
+    "macrogen", "theragen", "bioneer", "gencurix", "genematrix",
+    "lunit", "vuno", "deepnoid", "coreline", "jlk inspection",
+    "classys", "jeisys", "lutronic", "wontech", "humedix",
+    # 기관/병원
+    "seoul national university", "samsung medical center",
+    "asan medical center", "severance hospital", "yonsei university",
+    "korea university", "catholic university of korea",
+    "national cancer center korea", "seoul st. mary",
+    "bundang seoul national", "ajou university hospital",
+    # 국가 표기
+    "republic of korea", "south korea", "seoul, korea",
+]
+
+SEC_FORMS = "6-K,20-F,8-K,10-K,10-Q,F-1,F-3,424B4,SC 13D,SC 13G"
 
 
+# ─────────────────────────────────────────────
+# 중복 제거 캐시
+# ─────────────────────────────────────────────
+def _db():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY, ts TEXT)"
+    )
+    return conn
+
+
+def is_new(source: str, raw_id: str) -> bool:
+    key = hashlib.sha256(f"{source}:{raw_id}".encode()).hexdigest()[:20]
+    conn = _db()
+    cur = conn.execute("SELECT 1 FROM seen WHERE id=?", (key,))
+    if cur.fetchone():
+        conn.close()
+        return False
+    conn.execute(
+        "INSERT INTO seen VALUES (?, ?)", (key, datetime.utcnow().isoformat())
+    )
+    conn.commit()
+    conn.close()
+    return True
+
+
+# ─────────────────────────────────────────────
+# 텔레그램
+# ─────────────────────────────────────────────
+def tg_send(text: str):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("[TG 미설정]", text[:200])
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=10,
+        )
+    except Exception as e:
+        print("[TG 발송 실패]", e)
+
+
+def alert(emoji, source, title, keyword, date, url, detail):
+    tg_send(
+        f"{emoji} <b>[{source}] 새 공시</b>\n\n"
+        f"📅 {date}\n"
+        f"🏢 키워드: <b>{keyword}</b>\n"
+        f"📌 {title}\n\n"
+        f"{detail}\n\n"
+        f"🔗 <a href=\"{url}\">원문 보기</a>"
+    )
+
+
+def match_korean(text: str):
+    low = text.lower()
+    for kw in KOREAN_KEYWORDS:
+        if kw in low:
+            return kw
+    return None
+
+
+# ─────────────────────────────────────────────
+# 1. ClinicalTrials.gov — 최신순 + 코드에서 날짜 비교
+# ─────────────────────────────────────────────
+def run_clinicaltrials(cutoff_date: str) -> tuple[int, int]:
+    url = "https://clinicaltrials.gov/api/v2/studies"
+    params = {"sort": "LastUpdatePostDate:desc", "pageSize": 100, "format": "json"}
+    scanned = matched = 0
+    token = None
+
+    for _ in range(30):  # 최대 3000건
+        if token:
+            params["pageToken"] = token
+        r = requests.get(url, params=params, headers=UA, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        studies = data.get("studies", [])
+        if not studies:
+            break
+
+        stop = False
+        for s in studies:
+            scanned += 1
+            upd = (
+                s.get("protocolSection", {})
+                .get("statusModule", {})
+                .get("lastUpdatePostDateStruct", {})
+                .get("date", "")
+            )
+            if upd and upd < cutoff_date:
+                stop = True
+                break
+
+            kw = match_korean(json.dumps(s, ensure_ascii=False))
+            if not kw:
+                continue
+
+            ps = s.get("protocolSection", {})
+            nct = ps.get("identificationModule", {}).get("nctId", "")
+            if not nct or not is_new("ct", nct):
+                continue
+
+            title = ps.get("identificationModule", {}).get("briefTitle", "N/A")
+            sponsor = (
+                ps.get("sponsorCollaboratorsModule", {})
+                .get("leadSponsor", {})
+                .get("name", "N/A")
+            )
+            status = ps.get("statusModule", {}).get("overallStatus", "N/A")
+            phases = ", ".join(ps.get("designModule", {}).get("phases", []) or ["N/A"])
+            conds = ", ".join(ps.get("conditionsModule", {}).get("conditions", [])[:3])
+
+            alert(
+                "🧪", "ClinicalTrials.gov", title, kw, upd,
+                f"https://clinicaltrials.gov/study/{nct}",
+                f"[{phases}] {conds}\n스폰서: {sponsor} | 상태: {status}",
+            )
+            matched += 1
+
+        if stop:
+            break
+        token = data.get("nextPageToken")
+        if not token:
+            break
+
+    return scanned, matched
+
+
+# ─────────────────────────────────────────────
+# 2. SEC EDGAR 전문검색 (efts.sec.gov)
+# ─────────────────────────────────────────────
+SEC_QUERY_GROUPS = [
+    '"celltrion" OR "samsung bioepis" OR "samsung biologics" OR "sk biopharmaceuticals" OR "sk bioscience"',
+    '"hanmi pharmaceutical" OR "yuhan" OR "daewoong" OR "lotte biologics" OR "gc biopharma"',
+    '"hugel" OR "medytox" OR "alteogen" OR "genexine" OR "kolon tissuegene"',
+    '"lunit" OR "seegene" OR "sd biosensor" OR "abl bio" OR "bridge biotherapeutics"',
+    '"ligachem" OR "hanall biopharma" OR "aprilbio" OR "eubiologics" OR "cha biotech"',
+]
+
+
+def run_sec(start_date: str, end_date: str) -> tuple[int, int]:
+    url = "https://efts.sec.gov/LATEST/search-index"
+    scanned = matched = 0
+    seen_adsh = set()
+
+    for q in SEC_QUERY_GROUPS:
+        params = {
+            "q": q,
+            "forms": SEC_FORMS,
+            "dateRange": "custom",
+            "startdt": start_date,
+            "enddt": end_date,
+        }
+        r = requests.get(url, params=params, headers=UA, timeout=30)
+        if r.status_code != 200:
+            tg_send(f"🚨 SEC 응답 {r.status_code}: {q[:50]}...")
+            continue
+
+        hits = r.json().get("hits", {}).get("hits", [])
+        for h in hits:
+            src = h.get("_source", {})
+            adsh = src.get("adsh", "")
+            scanned += 1
+            if not adsh or adsh in seen_adsh:
+                continue
+            seen_adsh.add(adsh)
+            if not is_new("sec", adsh):
+                continue
+
+            names = ", ".join(src.get("display_names", ["N/A"]))
+            form = src.get("form", src.get("root_forms", ["?"])[0] if src.get("root_forms") else "?")
+            fdate = src.get("file_date", "")
+            kw = match_korean(names + " " + json.dumps(src)) or "쿼리매칭"
+            ciks = src.get("ciks", [])
+            cik = str(int(ciks[0])) if ciks else ""
+            furl = (
+                f"https://www.sec.gov/Archives/edgar/data/{cik}/"
+                f"{adsh.replace('-', '')}/{adsh}-index.htm"
+                if cik else "https://efts.sec.gov/LATEST/search-index?q=" + adsh
+            )
+
+            alert("📋", "SEC EDGAR", f"[{form}] {names}", kw, fdate, furl,
+                  f"공시유형: {form}\n접수번호: {adsh}")
+            matched += 1
+
+        time.sleep(0.5)  # SEC 레이트리밋 예방
+
+    return scanned, matched
+
+
+# ─────────────────────────────────────────────
+# 3. CTIS (유럽 임상시험) — RSS 업데이트 피드 + 상세조회
+# ─────────────────────────────────────────────
+def run_ctis() -> tuple[int, int]:
+    rss_url = "https://euclinicaltrials.eu/ctis-public-api/rss/updates.rss"
+    scanned = matched = 0
+
+    r = requests.get(rss_url, params={"search_criteria": "{}"}, headers=UA, timeout=30)
+    if r.status_code != 200:
+        tg_send(f"🚨 CTIS RSS 응답 {r.status_code}")
+        return 0, 0
+
+    ids = re.findall(r"EUCT=([\d-]+)", r.text)
+    ids = list(dict.fromkeys(ids))[:60]  # 최근 60건 상한
+
+    for euct in ids:
+        scanned += 1
+        try:
+            d = requests.get(
+                f"https://euclinicaltrials.eu/ctis-public-api/retrieve/{euct}",
+                headers=UA, timeout=20,
+            )
+            if d.status_code != 200:
+                continue
+            body = d.text
+            kw = match_korean(body)
+            if not kw:
+                continue
+            if not is_new("ctis", euct):
+                continue
+
+            try:
+                j = d.json()
+                title = str(j.get("shortTitle") or j.get("title") or euct)[:150]
+            except Exception:
+                title = euct
+
+            alert(
+                "🇪🇺", "CTIS (유럽)", title, kw,
+                datetime.utcnow().strftime("%Y-%m-%d"),
+                f"https://euclinicaltrials.eu/search-for-clinical-trials/?lang=en&EUCT={euct}",
+                f"EUCT 번호: {euct}",
+            )
+            matched += 1
+            time.sleep(0.3)
+        except Exception:
+            continue
+
+    return scanned, matched
+
+
+# ─────────────────────────────────────────────
+# 메인
+# ─────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--hours", type=int, default=DEFAULT_LOOKBACK_HOURS,
-                        help="몇 시간 이전부터 스캔할지 (기본: 2)")
-    args = parser.parse_args()
-    lookback = args.hours
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--hours", type=int, default=2)
+    args = ap.parse_args()
 
-    print(f"[BioWatch] 시작: {datetime.utcnow().isoformat()} UTC")
-    print(f"[BioWatch] Lookback: {lookback}시간")
-    counts = {}
+    now = datetime.utcnow()
+    cutoff = (now - timedelta(hours=args.hours)).strftime("%Y-%m-%d")
+    today = now.strftime("%Y-%m-%d")
 
-    # 1. ClinicalTrials.gov
-    try:
-        print("[1/5] ClinicalTrials.gov 스캔 중...")
-        counts["clinicaltrials"] = ct_fetch(lookback)
-        print(f"  → {counts['clinicaltrials']}건 신규")
-    except Exception:
-        send_error("clinicaltrials", traceback.format_exc()[:500])
-        counts["clinicaltrials"] = 0
+    print(f"[BioWatch v2] 시작 {now.isoformat()} UTC / lookback {args.hours}h (cutoff {cutoff})")
+    results = {}
 
-    # 2. SEC EDGAR
-    try:
-        print("[2/5] SEC EDGAR 스캔 중...")
-        counts["sec"] = sec_fetch(lookback)
-        print(f"  → {counts['sec']}건 신규")
-    except Exception:
-        send_error("sec", traceback.format_exc()[:500])
-        counts["sec"] = 0
+    for name, fn in [
+        ("ClinicalTrials", lambda: run_clinicaltrials(cutoff)),
+        ("SEC", lambda: run_sec(cutoff, today)),
+        ("CTIS", lambda: run_ctis()),
+    ]:
+        try:
+            scanned, matched = fn()
+            results[name] = (scanned, matched)
+            print(f"  {name}: {scanned}건 스캔 / {matched}건 알림")
+        except Exception:
+            err = traceback.format_exc()
+            print(f"  {name}: 오류\n{err}")
+            tg_send(f"🚨 <b>[BioWatch 오류] {name}</b>\n{err[:400]}")
+            results[name] = (0, 0)
 
-    # 3. 의약품안전나라
-    try:
-        print("[3/5] 의약품안전나라 스캔 중...")
-        counts["mfds"] = mfds_fetch(lookback)
-        print(f"  → {counts['mfds']}건 신규")
-    except Exception:
-        send_error("mfds", traceback.format_exc()[:500])
-        counts["mfds"] = 0
+    total = sum(m for _, m in results.values())
+    if total > 0:
+        lines = [f"📊 <b>BioWatch 스캔 결과</b> ({now.strftime('%m-%d %H:%M')} UTC)\n"]
+        for k, (s, m) in results.items():
+            lines.append(f"• {k}: {s}건 스캔 → <b>{m}건</b> 알림")
+        tg_send("\n".join(lines))
 
-    # 4. EUCTR (유럽 임상시험)
-    try:
-        print("[4/5] EUCTR 스캔 중...")
-        counts["euctr"] = fetch_euctr_and_notify(lookback)
-        print(f"  → {counts['euctr']}건 신규")
-    except Exception:
-        send_error("euctr", traceback.format_exc()[:500])
-        counts["euctr"] = 0
-
-    # 5. EMA (유럽 의약품청)
-    try:
-        print("[5/5] EMA 스캔 중...")
-        counts["ema"] = fetch_ema_and_notify(lookback)
-        print(f"  → {counts['ema']}건 신규")
-    except Exception:
-        send_error("ema", traceback.format_exc()[:500])
-        counts["ema"] = 0
-
-    # 요약 발송 (신규 건 있을 때만)
-    send_summary(counts)
-
-    total = sum(counts.values())
-    print(f"[BioWatch] 완료. 총 {total}건 알림 발송.")
+    print(f"[BioWatch v2] 완료. 총 {total}건 알림.")
     return 0
 
 
