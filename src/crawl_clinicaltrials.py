@@ -89,8 +89,8 @@ def fetch_and_notify(lookback_hours: int = 1) -> int:
     한국 관련 항목을 찾아 텔레그램 알림 발송
     Returns: 발송 건수
     """
-    since = (datetime.utcnow() - timedelta(hours=lookback_hours)).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
+        since = (datetime.utcnow() - timedelta(hours=lookback_hours)).strftime(
+        "%Y-%m-%d"
     )
 
     params = {
