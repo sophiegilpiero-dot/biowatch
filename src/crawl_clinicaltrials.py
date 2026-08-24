@@ -1,8 +1,8 @@
 """
 ClinicalTrials.gov API v2 크롤러
 - 전체 텍스트에서 한국 기업/기관명 매칭
-- 스폰서, 공동연구자, 기관, 상태, 적응증 등 모든 필드 검색
 """
+import json
 import requests
 from datetime import datetime, timedelta
 from src.korean_biotech_filter import is_korean_entity
@@ -11,49 +11,8 @@ from src.telegram_notify import send_alert, send_error
 
 BASE_URL = "https://clinicaltrials.gov/api/v2/studies"
 
-# 검사할 필드 (전체 텍스트 커버)
-FIELDS_TO_CONCAT = [
-    "protocolSection.identificationModule.briefTitle",
-    "protocolSection.identificationModule.officialTitle",
-    "protocolSection.identificationModule.organization.fullName",
-    "protocolSection.sponsorCollaboratorsModule.leadSponsor.name",
-    "protocolSection.sponsorCollaboratorsModule.collaborators",
-    "protocolSection.descriptionModule.briefSummary",
-    "protocolSection.descriptionModule.detailedDescription",
-    "protocolSection.conditionsModule.conditions",
-    "protocolSection.conditionsModule.keywords",
-    "protocolSection.contactsLocationsModule.locations",
-    "protocolSection.contactsLocationsModule.centralContacts",
-    "protocolSection.armsInterventionsModule.interventions",
-]
-
-
-def _safe_get(d: dict, dotted_key: str) -> str:
-    """중첩 dict에서 점 표기법으로 값 추출"""
-    keys = dotted_key.split(".")
-    val = d
-    for k in keys:
-        if not isinstance(val, dict):
-            return ""
-        val = val.get(k, "")
-    if isinstance(val, list):
-        return " ".join(str(i) for i in val)
-    return str(val) if val else ""
-
-
-def _extract_full_text(study: dict) -> str:
-    """연구 전체 텍스트 추출"""
-    parts = []
-    for field in FIELDS_TO_CONCAT:
-        parts.append(_safe_get(study, field))
-    # JSON 전체를 문자열로도 추가 (놓치는 필드 없게)
-    import json
-    parts.append(json.dumps(study, ensure_ascii=False))
-    return " ".join(parts)
-
 
 def _parse_study(study: dict) -> dict:
-    """API 응답에서 필요한 정보 추출"""
     ps = study.get("protocolSection", {})
     id_mod = ps.get("identificationModule", {})
     sponsor_mod = ps.get("sponsorCollaboratorsModule", {})
@@ -83,18 +42,12 @@ def _parse_study(study: dict) -> dict:
     }
 
 
-def fetch_and_notify(lookback_hours: int = 1) -> int:
-    """
-    최근 lookback_hours 시간 이내에 업데이트된 연구 중
-    한국 관련 항목을 찾아 텔레그램 알림 발송
-    Returns: 발송 건수
-    """
-    since = (datetime.utcnow() - timedelta(hours=lookback_hours)).strftime(
-        "%Y-%m-%d"
-    )
+def fetch_and_notify(lookback_hours: int = 2) -> int:
+    # 날짜만 사용 (시간 포함하면 400 오류)
+    since = (datetime.utcnow() - timedelta(hours=lookback_hours)).strftime("%Y-%m-%d")
 
     params = {
-        "filter.lastUpdatePostDate.gte": since,
+        "filter.advanced": f"AREA[LastUpdatePostDate]RANGE[{since},MAX]",
         "pageSize": 100,
         "format": "json",
     }
@@ -117,7 +70,8 @@ def fetch_and_notify(lookback_hours: int = 1) -> int:
         studies = data.get("studies", [])
 
         for study in studies:
-            full_text = _extract_full_text(study)
+            # 연구 전체 JSON을 텍스트로 변환해 매칭 (누락 필드 없게)
+            full_text = json.dumps(study, ensure_ascii=False)
             matched, keyword = is_korean_entity(full_text)
 
             if not matched:
@@ -125,7 +79,7 @@ def fetch_and_notify(lookback_hours: int = 1) -> int:
 
             parsed = _parse_study(study)
 
-            if not is_new("clinicaltrials", parsed["id"]):
+            if not parsed["id"] or not is_new("clinicaltrials", parsed["id"]):
                 continue
 
             parsed["matched_keyword"] = keyword
