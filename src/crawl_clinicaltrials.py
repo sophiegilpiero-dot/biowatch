@@ -94,7 +94,7 @@ def fetch_and_notify(lookback_hours: int = 1) -> int:
     )
 
     params = {
-        "filter.advanced": f"AREA[LastUpdatePostDate]RANGE[{since},MAX]",
+        "filter.lastUpdatePostDate.gte": since,
         "pageSize": 100,
         "format": "json",
     }
