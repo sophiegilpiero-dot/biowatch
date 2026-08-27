@@ -2,7 +2,7 @@ name: BioWatch — 한국 바이오/제약 공시 추적
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
       hours:
