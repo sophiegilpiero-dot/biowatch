@@ -26,40 +26,224 @@ DB_PATH = Path(__file__).parent / "data" / "seen.db"
 
 UA = {"User-Agent": "BioWatch research (biowatch.tracker@gmail.com)"}
 
+CTIS_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/rss+xml, application/xml, text/xml, */*",
+}
+
 # 한국 기업/기관 키워드 (영문 위주 — 해외 공시는 영문)
 KOREAN_KEYWORDS = [
-    # 대형
-    "celltrion", "samsung bioepis", "samsung biologics", "sk bioscience",
-    "sk biopharm", "sk life science", "lg chem", "lotte biologics",
-    "yuhan", "hanmi", "daewoong", "boryung", "ildong", "chong kun dang",
-    "chongkundang", "dong-a st", "dongbang", "jw pharmaceutical",
-    "gc biopharma", "gc pharma", "green cross", "hk inno",
+    # ── 대형 제약 ──
+    "celltrion", "samsung bioepis", "samsung biologics", "samsung biologic",
+    "sk bioscience", "sk biopharm", "sk biopharmaceuticals", "sk life science",
+    "lg chem", "lg chemistry", "lotte biologics", "lotte bio",
+    "yuhan", "hanmi", "hanmi pharm", "hanmi pharmaceutical",
+    "daewoong", "daewoong pharmaceutical", "daewoong bio",
+    "boryung", "ildong", "il-dong",
+    "chong kun dang", "chongkundang", "ckd pharma",
+    "dong-a st", "dong-a socio", "dongbang",
+    "jw pharmaceutical", "jw pharma",
+    "gc biopharma", "gc pharma", "green cross",
+    "hk inno.n", "hk inno",
     "samjin pharm", "kwangdong", "huons", "hyundai pharm",
-    # 바이오텍
+    "taejoon pharm", "alvogen korea", "boryung biopharma",
+    "cheiljedang", "cj bioscience", "cj healthcare",
+    "dongkook pharm", "dongkook pharmaceutical",
+    "ilyang pharm", "ilyang pharmaceutical",
+    "korean drug", "korea united pharm",
+    "namyang", "isu abxis", "isu chemical",
+    "pharmbio", "pharmbio korea",
+    "samchundang", "samchundang pharm",
+    "shinpoong", "shin poong",
+    "taeyoung pharm", "unimed pharma",
+    "yuhan corporation",
+
+    # ── 바이오텍 / 신약 ──
     "hugel", "medytox", "genexine", "alteogen", "helixmith",
     "kolon life science", "kolon tissuegene", "kolon tissue gene",
-    "bridge biotherapeutics", "tiumbio", "medpacto", "gi innovation",
-    "hanall", "aprilbio", "abl bio", "ablbio", "y-biologics",
-    "kangstem", "anterogen", "nature cell", "toolgen", "olipass",
-    "pharos ibio", "abion", "eubiologics", "cellid", "curigin",
-    "aribio", "cha biotech", "cha vaccine", "binex", "genosco",
-    "oncobix", "selecxine", "vaxcell", "imbiologics",
-    # 진단/AI/기기
-    "seegene", "sd biosensor", "sugentech", "i-sens", "nanoentek",
-    "macrogen", "theragen", "bioneer", "gencurix", "genematrix",
-    "lunit", "vuno", "deepnoid", "coreline", "jlk inspection",
-    "classys", "jeisys", "lutronic", "wontech", "humedix",
-    # 기관/병원
-    "seoul national university", "samsung medical center",
-    "asan medical center", "severance hospital", "yonsei university",
-    "korea university", "catholic university of korea",
-    "national cancer center korea", "seoul st. mary",
-    "bundang seoul national", "ajou university hospital",
-    # 국가 표기
-    "republic of korea", "south korea", "seoul, korea",
+    "bridge biotherapeutics", "tiumbio", "tium bio",
+    "medpacto", "gi innovation", "gi-innovation",
+    "hanall", "hanall biopharma", "aprilbio", "april bio",
+    "abl bio", "ablbio", "y-biologics", "ybiologics",
+    "kangstem", "anterogen", "nature cell",
+    "toolgen", "olipass", "pharos ibio",
+    "abion", "eubiologics", "cellid", "curigin",
+    "aribio", "ari bio",
+    "cha biotech", "cha vaccine",
+    "binex", "genosco", "oncobix",
+    "selecxine", "vaxcell", "imbiologics",
+    "brd medico", "hylabio", "hylab",
+    "inventisbio", "inventis bio",
+    "kainos medicine", "kainosbio",
+    "legochem biosciences", "legochem bio", "ligachem",
+    "meiji seika pharma korea",
+    "medifrontier", "medi-frontier",
+    "neogene therapeutics korea",
+    "neurobiogen", "neuro biogen",
+    "nextbio", "next bio research",
+    "nik kim",
+    "novacel", "novarix",
+    "onconova korea",
+    "orix bio", "orixbio",
+    "oscotec", "osc biotech",
+    "peptron", "pharosibio",
+    "posco bioscience",
+    "probiogen", "probiogics",
+    "proteina", "qurient",
+    "reyon pharmaceutical", "reyon pharma",
+    "rexgene biotech",
+    "roivant korea",
+    "sbio therapeutics",
+    "shin biogen",
+    "stevia biotech", "steviabio",
+    "therabest", "thera best",
+    "thermogene", "theranos korea",
+    "tizianalifesciences korea",
+    "trilion bio",
+    "trizell",
+    "united bio", "unitedbio",
+    "vig pharma",
+    "viromed",
+    "xencor korea",
+    "yuhan bioscience",
+    "zerecept bio",
+    "ziopharm korea",
+    "zymeworks korea",
+    "olixx", "olix pharmaceuticals",
+    "bo1 therapeutics",
+    "geovax korea",
+    "invivo therapeutics korea",
+    "inventage",
+    "pharmabcine",
+    "i-mab korea",
+    "neoimmuntech",
+    "bo therapeutics",
+    "onconova",
+    "proteovant korea",
+    "orum therapeutics",
+    "genoptix korea",
+    "genervon korea",
+    "bighat biosciences korea",
+    "bioatla korea",
+    "merus korea",
+    "bicycle therapeutics korea",
+    "regeneron korea",
+    "blueprint medicines korea",
+    "agenus korea",
+    "arcus biosciences korea",
+    "turning point korea",
+
+    # ── 항체 / 바이오시밀러 ──
+    "celltrion healthcare",
+    "samsung bioepis holdings",
+    "prestige biopharma",
+    "prestige biopharmaceuticals",
+    "scinai immunotherapeutics korea",
+    "inventisbio",
+    "boryung antibody",
+    "y-trap", "ytrap",
+    "jw bioscience",
+
+    # ── 진단 / AI / 의료기기 ──
+    "seegene", "sd biosensor", "sugentech",
+    "i-sens", "isens", "nanoentek",
+    "macrogen", "theragen", "bioneer",
+    "gencurix", "genematrix",
+    "lunit", "vuno", "deepnoid",
+    "coreline", "jlk inspection", "jlk inc",
+    "classys", "jeisys", "lutronic",
+    "wontech", "humedix",
+    "biosig technologies korea",
+    "inbody", "biospace",
+    "medit", "megagen",
+    "osteonic", "osstem",
+    "vieworks", "viewworks",
+    "medical ip", "medicalip",
+    "kakao health", "kakaohealth",
+    "naver health", "naverhealth",
+    "kakao healthcare",
+    "medibloc",
+    "health2sync korea",
+    "3billion", "three billion",
+    "genome insight",
+    "genomeinsight",
+    "dxvx",
+    "ezdiagnosis",
+    "diquest",
+    "insightful science korea",
+    "insilico medicine korea",
+    "standigm",
+    "arontier",
+    "pharmaai",
+    "pharmai",
+    "mediwhale",
+    "synaps dx korea",
+    "neurotrack korea",
+    "s-ray", "sray",
+    "rayence",
+    "raymedical",
+
+    # ── CMO / CDMO ──
+    "samsung biologics",
+    "lotte biologics",
+    "celltrion manufacturing",
+    "sk pharmteco",
+    "bioxcel therapeutics korea",
+    "hncp", "hn corporation",
+    "daewoong biologics",
+    "lg chem life science",
+
+    # ── 기관 / 병원 ──
+    "seoul national university", "snu hospital",
+    "samsung medical center",
+    "asan medical center",
+    "severance hospital",
+    "yonsei university",
+    "korea university",
+    "catholic university of korea",
+    "national cancer center korea",
+    "seoul st. mary",
+    "bundang seoul national",
+    "ajou university hospital",
+    "kyungpook national university",
+    "chonnam national university",
+    "pusan national university",
+    "konkuk university hospital",
+    "ewha womans university hospital",
+    "hallym university",
+    "inha university hospital",
+    "gachon university",
+    "dongguk university hospital",
+    "chungnam national university",
+    "chungbuk national university",
+    "wonkwang university",
+    "jeonbuk national university",
+
+    # ── 국가 표기 ──
+    "republic of korea",
+    "south korea",
+    "seoul, korea",
+    "korea institute",
+    "korean institute",
 ]
 
 SEC_FORMS = "6-K,20-F,8-K,10-K,10-Q,F-1,F-3,424B4,SC 13D,SC 13G"
+
+# SEC 쿼리 그룹 (EDGAR 전문검색용, 그룹당 5개 이하 권장)
+SEC_QUERY_GROUPS = [
+    '"celltrion" OR "samsung bioepis" OR "samsung biologics" OR "sk biopharmaceuticals" OR "sk bioscience"',
+    '"hanmi pharmaceutical" OR "yuhan" OR "daewoong" OR "lotte biologics" OR "gc biopharma"',
+    '"hugel" OR "medytox" OR "alteogen" OR "genexine" OR "kolon tissuegene"',
+    '"lunit" OR "seegene" OR "sd biosensor" OR "abl bio" OR "bridge biotherapeutics"',
+    '"ligachem" OR "hanall biopharma" OR "aprilbio" OR "eubiologics" OR "cha biotech"',
+    '"prestige biopharma" OR "olixx" OR "pharmabcine" OR "neoimmuntech" OR "orum therapeutics"',
+    '"inventage" OR "qurient" OR "oscotec" OR "peptron" OR "viromed"',
+    '"tiumbio" OR "medpacto" OR "gi innovation" OR "curigin" OR "cellid"',
+    '"bioneer" OR "macrogen" OR "theragen" OR "gencurix" OR "genematrix"',
+    '"standigm" OR "medibloc" OR "3billion" OR "genome insight" OR "dxvx"',
+    '"sk pharmteco" OR "lg chem life science" OR "hn corporation" OR "jw bioscience" OR "boryung"',
+    '"anterogen" OR "kangstem" OR "nature cell" OR "toolgen" OR "olipass"',
+]
 
 
 # ─────────────────────────────────────────────
@@ -131,7 +315,7 @@ def match_korean(text: str):
 
 
 # ─────────────────────────────────────────────
-# 1. ClinicalTrials.gov — 최신순 + 코드에서 날짜 비교
+# 1. ClinicalTrials.gov
 # ─────────────────────────────────────────────
 def run_clinicaltrials(cutoff_date: str) -> tuple[int, int]:
     url = "https://clinicaltrials.gov/api/v2/studies"
@@ -139,7 +323,7 @@ def run_clinicaltrials(cutoff_date: str) -> tuple[int, int]:
     scanned = matched = 0
     token = None
 
-    for _ in range(30):  # 최대 3000건
+    for _ in range(30):
         if token:
             params["pageToken"] = token
         r = requests.get(url, params=params, headers=UA, timeout=30)
@@ -198,17 +382,8 @@ def run_clinicaltrials(cutoff_date: str) -> tuple[int, int]:
 
 
 # ─────────────────────────────────────────────
-# 2. SEC EDGAR 전문검색 (efts.sec.gov)
+# 2. SEC EDGAR
 # ─────────────────────────────────────────────
-SEC_QUERY_GROUPS = [
-    '"celltrion" OR "samsung bioepis" OR "samsung biologics" OR "sk biopharmaceuticals" OR "sk bioscience"',
-    '"hanmi pharmaceutical" OR "yuhan" OR "daewoong" OR "lotte biologics" OR "gc biopharma"',
-    '"hugel" OR "medytox" OR "alteogen" OR "genexine" OR "kolon tissuegene"',
-    '"lunit" OR "seegene" OR "sd biosensor" OR "abl bio" OR "bridge biotherapeutics"',
-    '"ligachem" OR "hanall biopharma" OR "aprilbio" OR "eubiologics" OR "cha biotech"',
-]
-
-
 def run_sec(start_date: str, end_date: str) -> tuple[int, int]:
     url = "https://efts.sec.gov/LATEST/search-index"
     scanned = matched = 0
@@ -254,32 +429,32 @@ def run_sec(start_date: str, end_date: str) -> tuple[int, int]:
                   f"공시유형: {form}\n접수번호: {adsh}")
             matched += 1
 
-        time.sleep(0.5)  # SEC 레이트리밋 예방
+        time.sleep(0.5)
 
     return scanned, matched
 
 
 # ─────────────────────────────────────────────
-# 3. CTIS (유럽 임상시험) — RSS 업데이트 피드 + 상세조회
+# 3. CTIS (유럽 임상시험)
 # ─────────────────────────────────────────────
 def run_ctis() -> tuple[int, int]:
     rss_url = "https://euclinicaltrials.eu/ctis-public-api/rss/updates.rss"
     scanned = matched = 0
 
-    r = requests.get(rss_url, params={"search_criteria": "{}"}, headers=UA, timeout=30)
+    r = requests.get(rss_url, params={"search_criteria": "{}"}, headers=CTIS_HEADERS, timeout=30)
     if r.status_code != 200:
         tg_send(f"🚨 CTIS RSS 응답 {r.status_code}")
         return 0, 0
 
     ids = re.findall(r"EUCT=([\d-]+)", r.text)
-    ids = list(dict.fromkeys(ids))[:60]  # 최근 60건 상한
+    ids = list(dict.fromkeys(ids))[:60]
 
     for euct in ids:
         scanned += 1
         try:
             d = requests.get(
                 f"https://euclinicaltrials.eu/ctis-public-api/retrieve/{euct}",
-                headers=UA, timeout=20,
+                headers=CTIS_HEADERS, timeout=20,
             )
             if d.status_code != 200:
                 continue
