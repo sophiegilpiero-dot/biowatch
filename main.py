@@ -227,9 +227,13 @@ KOREAN_KEYWORDS = [
     "korean institute",
 ]
 
-SEC_FORMS = "6-K,20-F,8-K,10-K,10-Q,F-1,F-3,424B4,SC 13D,SC 13G"
+# SEC 폼 타입 목록 (복수 파라미터로 전달)
+SEC_FORMS = [
+    "6-K", "20-F", "8-K", "10-K", "10-Q",
+    "F-1", "F-3", "424B4", "SC 13D", "SC 13G",
+]
 
-# SEC 쿼리 그룹 (EDGAR 전문검색용, 그룹당 5개 이하 권장)
+# SEC 쿼리 그룹 (EDGAR 전문검색용, 그룹당 5개 이하)
 SEC_QUERY_GROUPS = [
     '"celltrion" OR "samsung bioepis" OR "samsung biologics" OR "sk biopharmaceuticals" OR "sk bioscience"',
     '"hanmi pharmaceutical" OR "yuhan" OR "daewoong" OR "lotte biologics" OR "gc biopharma"',
@@ -390,13 +394,16 @@ def run_sec(start_date: str, end_date: str) -> tuple[int, int]:
     seen_adsh = set()
 
     for q in SEC_QUERY_GROUPS:
-        params = {
-            "q": q,
-            "forms": SEC_FORMS,
-            "dateRange": "custom",
-            "startdt": start_date,
-            "enddt": end_date,
-        }
+        # forms는 중복 키 파라미터로 전달해야 EDGAR가 올바르게 파싱함
+        params = [
+            ("q", q),
+            ("dateRange", "custom"),
+            ("startdt", start_date),
+            ("enddt", end_date),
+        ]
+        for f in SEC_FORMS:
+            params.append(("forms", f))
+
         r = requests.get(url, params=params, headers=UA, timeout=30)
         if r.status_code != 200:
             tg_send(f"🚨 SEC 응답 {r.status_code}: {q[:50]}...")
