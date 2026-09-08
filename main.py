@@ -227,7 +227,7 @@ KOREAN_KEYWORDS = [
     "korean institute",
 ]
 
-# SEC 폼 타입 목록 (복수 파라미터로 전달)
+# SEC 폼 타입 목록 (콤마 구분 단일 파라미터로 전달)
 SEC_FORMS = [
     "6-K", "20-F", "8-K", "10-K", "10-Q",
     "F-1", "F-3", "424B4", "SC 13D", "SC 13G",
@@ -394,19 +394,28 @@ def run_sec(start_date: str, end_date: str) -> tuple[int, int]:
     seen_adsh = set()
 
     for q in SEC_QUERY_GROUPS:
-        # forms는 중복 키 파라미터로 전달해야 EDGAR가 올바르게 파싱함
-        params = [
-            ("q", q),
-            ("dateRange", "custom"),
-            ("startdt", start_date),
-            ("enddt", end_date),
-        ]
-        for f in SEC_FORMS:
-            params.append(("forms", f))
+        # forms는 콤마 구분 단일 파라미터로 전달 (중복 키로 넘기면 500)
+        params = {
+            "q": q,
+            "dateRange": "custom",
+            "startdt": start_date,
+            "enddt": end_date,
+            "forms": ",".join(SEC_FORMS),
+        }
 
-        r = requests.get(url, params=params, headers=UA, timeout=30)
-        if r.status_code != 200:
-            tg_send(f"🚨 SEC 응답 {r.status_code}: {q[:50]}...")
+        r = None
+        for attempt in range(3):
+            try:
+                r = requests.get(url, params=params, headers=UA, timeout=30)
+                if r.status_code == 200:
+                    break
+            except requests.RequestException:
+                r = None
+            time.sleep(2 * (attempt + 1))
+
+        if r is None or r.status_code != 200:
+            code = r.status_code if r is not None else "네트워크 오류"
+            tg_send(f"🚨 SEC 응답 {code}: {q[:50]}...")
             continue
 
         hits = r.json().get("hits", {}).get("hits", [])
@@ -421,7 +430,8 @@ def run_sec(start_date: str, end_date: str) -> tuple[int, int]:
                 continue
 
             names = ", ".join(src.get("display_names", ["N/A"]))
-            form = src.get("form", src.get("root_forms", ["?"])[0] if src.get("root_forms") else "?")
+            root_forms = src.get("root_forms") or []
+            form = src.get("form") or (root_forms[0] if root_forms else "?")
             fdate = src.get("file_date", "")
             kw = match_korean(names + " " + json.dumps(src)) or "쿼리매칭"
             ciks = src.get("ciks", [])
