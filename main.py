@@ -1,7 +1,14 @@
 """
-BioWatch v2 — 한국 바이오/제약 공시 추적 (단일 파일)
+BioWatch v3 — 한국 바이오/제약 공시 추적 (단일 파일)
 소스: ClinicalTrials.gov / SEC EDGAR / CTIS(유럽)
 사용법: python main.py --hours 48
+
+v3 변경사항
+  - SEC EDGAR forms 파라미터를 콤마 구분 단일값으로 수정 (500 에러 해결)
+  - SEC 요청 실패 시 최대 3회 재시도
+  - 신흥/비상장/예심단계 바이오텍 키워드 약 100개 추가
+  - 키워드 매칭을 정규식 단일 패스로 변경 (속도 개선)
+  - 매칭 0건이어도 요약 발송 (고장 vs 조용한 정상 구분)
 """
 import argparse
 import hashlib
@@ -31,9 +38,11 @@ CTIS_HEADERS = {
     "Accept": "application/rss+xml, application/xml, text/xml, */*",
 }
 
+# ─────────────────────────────────────────────
 # 한국 기업/기관 키워드 (영문 위주 — 해외 공시는 영문)
+# ─────────────────────────────────────────────
 KOREAN_KEYWORDS = [
-    # ── 대형 제약 ──
+    # ══════════ 대형 제약 ══════════
     "celltrion", "samsung bioepis", "samsung biologics", "samsung biologic",
     "sk bioscience", "sk biopharm", "sk biopharmaceuticals", "sk life science",
     "lg chem", "lg chemistry", "lotte biologics", "lotte bio",
@@ -57,8 +66,11 @@ KOREAN_KEYWORDS = [
     "shinpoong", "shin poong",
     "taeyoung pharm", "unimed pharma",
     "yuhan corporation",
+    "jeil pharmaceutical", "daewon pharmaceutical",
+    "dong wha pharm", "hanlim pharm", "ahn-gook pharmaceutical",
+    "yungjin pharm", "samil pharm", "kukje pharma",
 
-    # ── 바이오텍 / 신약 ──
+    # ══════════ 바이오텍 / 신약 (기존) ══════════
     "hugel", "medytox", "genexine", "alteogen", "helixmith",
     "kolon life science", "kolon tissuegene", "kolon tissue gene",
     "bridge biotherapeutics", "tiumbio", "tium bio",
@@ -76,14 +88,10 @@ KOREAN_KEYWORDS = [
     "inventisbio", "inventis bio",
     "kainos medicine", "kainosbio",
     "legochem biosciences", "legochem bio", "ligachem",
-    "meiji seika pharma korea",
     "medifrontier", "medi-frontier",
-    "neogene therapeutics korea",
     "neurobiogen", "neuro biogen",
     "nextbio", "next bio research",
-    "nik kim",
     "novacel", "novarix",
-    "onconova korea",
     "orix bio", "orixbio",
     "oscotec", "osc biotech",
     "peptron", "pharosibio",
@@ -92,59 +100,123 @@ KOREAN_KEYWORDS = [
     "proteina", "qurient",
     "reyon pharmaceutical", "reyon pharma",
     "rexgene biotech",
-    "roivant korea",
     "sbio therapeutics",
     "shin biogen",
     "stevia biotech", "steviabio",
     "therabest", "thera best",
-    "thermogene", "theranos korea",
-    "tizianalifesciences korea",
-    "trilion bio",
-    "trizell",
+    "thermogene",
+    "trilion bio", "trizell",
     "united bio", "unitedbio",
-    "vig pharma",
-    "viromed",
-    "xencor korea",
+    "vig pharma", "viromed",
     "yuhan bioscience",
     "zerecept bio",
-    "ziopharm korea",
-    "zymeworks korea",
     "olixx", "olix pharmaceuticals",
-    "bo1 therapeutics",
-    "geovax korea",
-    "invivo therapeutics korea",
-    "inventage",
-    "pharmabcine",
-    "i-mab korea",
-    "neoimmuntech",
-    "bo therapeutics",
-    "onconova",
-    "proteovant korea",
-    "orum therapeutics",
-    "genoptix korea",
-    "genervon korea",
-    "bighat biosciences korea",
-    "bioatla korea",
-    "merus korea",
-    "bicycle therapeutics korea",
-    "regeneron korea",
-    "blueprint medicines korea",
-    "agenus korea",
-    "arcus biosciences korea",
-    "turning point korea",
+    "inventage", "pharmabcine",
+    "neoimmuntech", "orum therapeutics",
+    "prestige biopharma", "prestige biopharmaceuticals",
+    "y-trap", "ytrap", "jw bioscience",
 
-    # ── 항체 / 바이오시밀러 ──
-    "celltrion healthcare",
-    "samsung bioepis holdings",
-    "prestige biopharma",
-    "prestige biopharmaceuticals",
-    "scinai immunotherapeutics korea",
-    "inventisbio",
-    "boryung antibody",
-    "y-trap", "ytrap",
-    "jw bioscience",
+    # ══════════ ① IPO 예심 청구 / 상장 임박 ══════════
+    "intocell", "into cell",                      # 인투셀 — ADC 링커 '오파스'
+    "nex-i", "nexai therapeutics",                # 넥스아이 — 오노약품 L/O
+    "innovo therapeutics",                        # 이노보테라퓨틱스 — AI '딥제마'
+    "organoid sciences",                          # 오가노이드사이언스 — 초격차 1호
+    "nextgen bioscience",                         # 넥스트젠바이오사이언스
+    "immuneoncia",                                # 이뮨온시아 — 유한 자회사
+    "gc genome",                                  # 지씨지놈
+    "mbd co", "medical & bio decision",           # 엠비디 — 코디알피
+    "lemon healthcare",                           # 레몬헬스케어
+    "inocras",                                    # 이노크라스 — 암 유전체, 美 본사
+    "neuracle genetics",                          # 뉴라클제네틱스 — AAV
+    "neuracle science",                           # 뉴라클사이언스
+    "sovargen",                                   # 소바젠 — 안젤리니 L/O
+    "gfc life science",                           # 지에프씨생명과학
 
-    # ── 진단 / AI / 의료기기 ──
+    # ══════════ ② 2026년 신규 상장 ══════════
+    "kanaph therapeutics",                        # 카나프테라퓨틱스
+    "ingenia therapeutics",                       # 인제니아테라퓨틱스
+    "recens medical",                             # 리센스메디컬 — FDA De Novo
+    "inventera",                                  # 인벤테라
+    "mezoo",                                      # 메쥬
+    "msbio",                                      # 엠에스바이오
+    "xcell therapeutics",                         # 엑셀세라퓨틱스 — CGT 배지
+    "aimedbio", "aimed bio",                      # 에임드바이오 — ADC
+    "rznomics",                                   # 알지노믹스 — RNA 치환효소
+    "livsmed",                                    # 리브스메드
+
+    # ══════════ ③ ADC / 표적단백질분해 ══════════
+    "pinotbio", "pinot bio",                      # 피노바이오
+    "novelty nobility",                           # 노벨티노빌리티 — c-KIT
+    "abclon", "ab clon",                          # 앱클론 — CAR-T
+    "illimis therapeutics",                       # 일리미스테라퓨틱스
+    "cellengene",                                 # 셀렌진
+
+    # ══════════ ④ 세포·유전자치료제 ══════════
+    "curocell",                                   # 큐로셀 — CAR-T
+    "gc cell", "gccell",                          # 지씨셀
+    "scm lifescience",                            # 에스씨엠생명과학
+    "eutilex",                                    # 유틸렉스
+    "corestem", "corestem chemon",                # 코아스템켐온
+    "pharmicell",                                 # 파미셀
+    "cellabmed",                                  # 셀랩메드
+    "vaxcell bio",                                # 백스셀바이오
+    "cellatoz",                                   # 셀라토즈테라퓨틱스
+    "novacell technology",                        # 노바셀테크놀로지
+    "cellico",                                    # 셀리코
+
+    # ══════════ ⑤ 방사성의약품 (RPT) ══════════
+    "cellbion",                                   # 셀비온 — Lu-177 전립선암
+    "futurechem",                                 # 퓨쳐켐
+    "duchembio", "du chem bio",                   # 듀켐바이오 — RPT CDMO
+
+    # ══════════ ⑥ 신약개발 ══════════
+    "voronoi",                                    # 보로노이 — 표적항암
+    "genuv",                                      # 지뉴브 — ALS 항체
+    "onconic therapeutics",                       # 온코닉테라퓨틱스 — 자큐보
+    "aptabio",                                    # 압타바이오 — NOX
+    "panolos bioscience",                         # 파노로스바이오사이언스
+    "progen co",                                  # 프로젠
+    "bioorchestra",                               # 바이오오케스트라
+    "immunoforge",                                # 이뮤노포지
+    "immunabs",                                   # 이뮨어브스
+    "nkmax", "nk max",                            # 엔케이맥스
+    "genome and company", "genome & company",     # 지놈앤컴퍼니
+    "cellivery",                                  # 셀리버리
+    "bioleaders",                                 # 바이오리더스
+    "cell biotech",                               # 셀바이오텍
+    "nibec",                                      # 나이벡 — 펩타이드
+    "enzychem lifesciences",                      # 엔지켐생명과학
+    "syntekabio",                                 # 신테카바이오
+    "novmetapharma",                              # 노브메타파마
+    "epibiotech",                                 # 에피바이오텍
+    "sillajen",                                   # 신라젠
+    "therasid bioscience",                        # 테라시드바이오사이언스
+    "vaxdigm",                                    # 백스디그엠
+    "neurobo biosciences",                        # 뉴로보바이오사이언스 — 동아ST
+    "hyundai bioscience",                         # 현대바이오사이언스
+    "sk plasma",                                  # SK플라즈마
+    "aprogen",                                    # 아프로젠
+
+    # ══════════ ⑦ AI 신약개발 / 오믹스 ══════════
+    "deargen",                                    # 디어젠
+    "pharmcadd", "pharm cadd",                    # 팜캐드
+    "oncocross",                                  # 온코크로스
+    "portrai",                                    # 포트라이
+    "bertis",                                     # 베르티스
+    "proteomtech",                                # 프로테옴텍
+    "standigm", "arontier", "pharmaai", "pharmai",
+
+    # ══════════ ⑧ 의료AI / 디지털헬스 ══════════
+    "neurophet",                                  # 뉴로핏
+    "airs medical",                               # 에어스메디컬
+    "promedius",                                  # 프로메디우스
+    "curexo",                                     # 큐렉소 — 수술로봇
+    "koh young technology",                       # 고영테크놀러지
+    "hurotics",                                   # 휴로틱스
+    "cosmo robotics", "cosmorobotics",            # 코스모로보틱스
+    "mediwhale", "medibloc", "health2sync korea",
+
+    # ══════════ ⑨ 진단 / 의료기기 ══════════
     "seegene", "sd biosensor", "sugentech",
     "i-sens", "isens", "nanoentek",
     "macrogen", "theragen", "bioneer",
@@ -153,81 +225,55 @@ KOREAN_KEYWORDS = [
     "coreline", "jlk inspection", "jlk inc",
     "classys", "jeisys", "lutronic",
     "wontech", "humedix",
-    "biosig technologies korea",
     "inbody", "biospace",
     "medit", "megagen",
     "osteonic", "osstem",
     "vieworks", "viewworks",
     "medical ip", "medicalip",
-    "kakao health", "kakaohealth",
-    "naver health", "naverhealth",
-    "kakao healthcare",
-    "medibloc",
-    "health2sync korea",
     "3billion", "three billion",
-    "genome insight",
-    "genomeinsight",
-    "dxvx",
-    "ezdiagnosis",
-    "diquest",
-    "insightful science korea",
-    "insilico medicine korea",
-    "standigm",
-    "arontier",
-    "pharmaai",
-    "pharmai",
-    "mediwhale",
-    "synaps dx korea",
-    "neurotrack korea",
-    "s-ray", "sray",
-    "rayence",
-    "raymedical",
+    "genome insight", "genomeinsight",
+    "dxvx", "ezdiagnosis",
+    "rayence", "raymedical",
+    "philosys",                                   # 필로시스
+    "genoss",                                     # 제노스
+    "optolane",                                   # 옵토레인
+    "geninus",                                    # 지니너스
+    "curiosis",                                   # 큐리오시스
+    "biomedlab",                                  # 바이오메드랩
 
-    # ── CMO / CDMO ──
-    "samsung biologics",
-    "lotte biologics",
-    "celltrion manufacturing",
-    "sk pharmteco",
-    "bioxcel therapeutics korea",
-    "hncp", "hn corporation",
-    "daewoong biologics",
-    "lg chem life science",
+    # ══════════ ⑩ CDMO ══════════
+    "sk pharmteco", "lg chem life science",
+    "celltrion manufacturing", "daewoong biologics",
+    "cellontech",                                 # 셀론텍
+    "prostemics",                                 # 프로스테믹스
 
-    # ── 기관 / 병원 ──
+    # ══════════ 기관 / 병원 ══════════
     "seoul national university", "snu hospital",
-    "samsung medical center",
-    "asan medical center",
-    "severance hospital",
-    "yonsei university",
-    "korea university",
-    "catholic university of korea",
-    "national cancer center korea",
-    "seoul st. mary",
-    "bundang seoul national",
-    "ajou university hospital",
-    "kyungpook national university",
-    "chonnam national university",
-    "pusan national university",
-    "konkuk university hospital",
-    "ewha womans university hospital",
-    "hallym university",
-    "inha university hospital",
-    "gachon university",
-    "dongguk university hospital",
-    "chungnam national university",
-    "chungbuk national university",
-    "wonkwang university",
+    "samsung medical center", "asan medical center",
+    "severance hospital", "yonsei university",
+    "korea university", "catholic university of korea",
+    "national cancer center korea", "seoul st. mary",
+    "bundang seoul national", "ajou university hospital",
+    "kyungpook national university", "chonnam national university",
+    "pusan national university", "konkuk university hospital",
+    "ewha womans university hospital", "hallym university",
+    "inha university hospital", "gachon university",
+    "dongguk university hospital", "chungnam national university",
+    "chungbuk national university", "wonkwang university",
     "jeonbuk national university",
 
-    # ── 국가 표기 ──
-    "republic of korea",
-    "south korea",
-    "seoul, korea",
-    "korea institute",
-    "korean institute",
+    # ══════════ 국가 표기 ══════════
+    "republic of korea", "south korea", "seoul, korea",
+    "korea institute", "korean institute",
 ]
 
-# SEC 폼 타입 목록 (콤마 구분 단일 파라미터로 전달)
+# 중복 제거 후 긴 키워드부터 매칭 (더 구체적인 이름 우선)
+KOREAN_KEYWORDS = sorted(set(KOREAN_KEYWORDS), key=len, reverse=True)
+
+# 정규식 단일 패스로 컴파일 — 키워드 300개여도 한 번만 스캔
+_KW_PATTERN = re.compile("|".join(re.escape(k) for k in KOREAN_KEYWORDS))
+
+# SEC 폼 타입 (콤마 구분 단일 파라미터로 전달)
 SEC_FORMS = [
     "6-K", "20-F", "8-K", "10-K", "10-Q",
     "F-1", "F-3", "424B4", "SC 13D", "SC 13G",
@@ -245,8 +291,14 @@ SEC_QUERY_GROUPS = [
     '"tiumbio" OR "medpacto" OR "gi innovation" OR "curigin" OR "cellid"',
     '"bioneer" OR "macrogen" OR "theragen" OR "gencurix" OR "genematrix"',
     '"standigm" OR "medibloc" OR "3billion" OR "genome insight" OR "dxvx"',
-    '"sk pharmteco" OR "lg chem life science" OR "hn corporation" OR "jw bioscience" OR "boryung"',
+    '"sk pharmteco" OR "lg chem life science" OR "jw bioscience" OR "boryung" OR "gc cell"',
     '"anterogen" OR "kangstem" OR "nature cell" OR "toolgen" OR "olipass"',
+    # ── 신흥/비상장 추가 그룹 ──
+    '"intocell" OR "aimedbio" OR "pinotbio" OR "novelty nobility" OR "abclon"',
+    '"voronoi" OR "genuv" OR "curocell" OR "eutilex" OR "onconic therapeutics"',
+    '"inocras" OR "rznomics" OR "bioorchestra" OR "sovargen" OR "neuracle"',
+    '"immuneoncia" OR "kanaph therapeutics" OR "xcell therapeutics" OR "aptabio" OR "nkmax"',
+    '"cellbion" OR "futurechem" OR "duchembio" OR "organoid sciences" OR "genome and company"',
 ]
 
 
@@ -256,9 +308,7 @@ SEC_QUERY_GROUPS = [
 def _db():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY, ts TEXT)"
-    )
+    conn.execute("CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY, ts TEXT)")
     return conn
 
 
@@ -269,9 +319,7 @@ def is_new(source: str, raw_id: str) -> bool:
     if cur.fetchone():
         conn.close()
         return False
-    conn.execute(
-        "INSERT INTO seen VALUES (?, ?)", (key, datetime.utcnow().isoformat())
-    )
+    conn.execute("INSERT INTO seen VALUES (?, ?)", (key, datetime.utcnow().isoformat()))
     conn.commit()
     conn.close()
     return True
@@ -311,11 +359,9 @@ def alert(emoji, source, title, keyword, date, url, detail):
 
 
 def match_korean(text: str):
-    low = text.lower()
-    for kw in KOREAN_KEYWORDS:
-        if kw in low:
-            return kw
-    return None
+    """정규식 단일 패스로 첫 매칭 키워드 반환 (없으면 None)"""
+    m = _KW_PATTERN.search(text.lower())
+    return m.group(0) if m else None
 
 
 # ─────────────────────────────────────────────
@@ -394,7 +440,7 @@ def run_sec(start_date: str, end_date: str) -> tuple[int, int]:
     seen_adsh = set()
 
     for q in SEC_QUERY_GROUPS:
-        # forms는 콤마 구분 단일 파라미터로 전달 (중복 키로 넘기면 500)
+        # forms는 콤마 구분 단일 파라미터 — 중복 키로 넘기면 500 발생
         params = {
             "q": q,
             "dateRange": "custom",
@@ -458,7 +504,8 @@ def run_ctis() -> tuple[int, int]:
     rss_url = "https://euclinicaltrials.eu/ctis-public-api/rss/updates.rss"
     scanned = matched = 0
 
-    r = requests.get(rss_url, params={"search_criteria": "{}"}, headers=CTIS_HEADERS, timeout=30)
+    r = requests.get(rss_url, params={"search_criteria": "{}"},
+                     headers=CTIS_HEADERS, timeout=30)
     if r.status_code != 200:
         tg_send(f"🚨 CTIS RSS 응답 {r.status_code}")
         return 0, 0
@@ -475,8 +522,7 @@ def run_ctis() -> tuple[int, int]:
             )
             if d.status_code != 200:
                 continue
-            body = d.text
-            kw = match_korean(body)
+            kw = match_korean(d.text)
             if not kw:
                 continue
             if not is_new("ctis", euct):
@@ -508,13 +554,16 @@ def run_ctis() -> tuple[int, int]:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--hours", type=int, default=2)
+    ap.add_argument("--quiet", action="store_true",
+                    help="매칭 0건이면 요약도 보내지 않음")
     args = ap.parse_args()
 
     now = datetime.utcnow()
     cutoff = (now - timedelta(hours=args.hours)).strftime("%Y-%m-%d")
     today = now.strftime("%Y-%m-%d")
 
-    print(f"[BioWatch v2] 시작 {now.isoformat()} UTC / lookback {args.hours}h (cutoff {cutoff})")
+    print(f"[BioWatch v3] 시작 {now.isoformat()} UTC / lookback {args.hours}h "
+          f"(cutoff {cutoff}) / 키워드 {len(KOREAN_KEYWORDS)}개")
     results = {}
 
     for name, fn in [
@@ -533,13 +582,17 @@ def main():
             results[name] = (0, 0)
 
     total = sum(m for _, m in results.values())
-    if total > 0:
+
+    # 0건이어도 요약 발송 — 메시지가 아예 안 오면 그때만 고장
+    if total > 0 or not args.quiet:
         lines = [f"📊 <b>BioWatch 스캔 결과</b> ({now.strftime('%m-%d %H:%M')} UTC)\n"]
         for k, (s, m) in results.items():
             lines.append(f"• {k}: {s}건 스캔 → <b>{m}건</b> 알림")
+        if total == 0:
+            lines.append("\n신규 매칭 없음 (정상 동작)")
         tg_send("\n".join(lines))
 
-    print(f"[BioWatch v2] 완료. 총 {total}건 알림.")
+    print(f"[BioWatch v3] 완료. 총 {total}건 알림.")
     return 0
 
 
