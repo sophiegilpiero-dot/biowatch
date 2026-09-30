@@ -1,7 +1,19 @@
 """
-BioWatch v3 — 한국 바이오/제약 공시 추적 (단일 파일)
+BioWatch v4 — 한국 바이오/제약 공시 추적 (단일 파일)
 소스: ClinicalTrials.gov / SEC EDGAR / CTIS(유럽)
 사용법: python main.py --hours 48
+
+v4 변경사항
+  - [중요] CT.gov 중복 제거 키를 'NCT 번호' → 'NCT 번호 + 최종 업데이트 게시일'로 변경
+           → 같은 임상의 후속 등록정보 변경(기관 철회, 인원·일정 변경 등)도 다시 알림
+  - CT.gov 알림을 '신규 등록' / '등록정보 변경'으로 구분, 변경 이력(History) 링크 추가
+  - CT.gov 조회를 API 날짜 필터(filter.advanced) + 페이지당 1000건으로 변경
+           → 하루 3000건 이상 업데이트되는 날에도 누락 없이 전수 스캔
+  - CT.gov 날짜(미 동부 기준)와 UTC 차이, 예약 실행 누락에 대비해 조회 범위를 하루 더 넉넉히
+  - 스캔이 페이지 상한에 걸려 잘리면 요약 메시지에 경고 표시
+  - CTIS도 'EUCT 번호 + RSS 게시시각' 기준으로 후속 업데이트 알림
+  - v3 → v4 전환 첫 실행 시, v3에서 이미 알림이 나간 건은 조용히 기준선 등록(알림 폭탄 방지)
+  - 요약 메시지에 한국시간(KST) 병기, 소요 시간 표시
 
 v3 변경사항
   - SEC EDGAR forms 파라미터를 콤마 구분 단일값으로 수정 (500 에러 해결)
@@ -302,27 +314,62 @@ SEC_QUERY_GROUPS = [
 ]
 
 
+
 # ─────────────────────────────────────────────
 # 중복 제거 캐시
 # ─────────────────────────────────────────────
+KST = timedelta(hours=9)
+
+
 def _db():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
     conn.execute("CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY, ts TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
     return conn
 
 
-def is_new(source: str, raw_id: str) -> bool:
-    key = hashlib.sha256(f"{source}:{raw_id}".encode()).hexdigest()[:20]
+def _key(source: str, raw_id: str) -> str:
+    return hashlib.sha256(f"{source}:{raw_id}".encode()).hexdigest()[:20]
+
+
+def was_seen(source: str, raw_id: str) -> bool:
+    """기록만 조회 (저장하지 않음)"""
     conn = _db()
-    cur = conn.execute("SELECT 1 FROM seen WHERE id=?", (key,))
-    if cur.fetchone():
-        conn.close()
-        return False
-    conn.execute("INSERT INTO seen VALUES (?, ?)", (key, datetime.utcnow().isoformat()))
+    cur = conn.execute("SELECT 1 FROM seen WHERE id=?", (_key(source, raw_id),))
+    hit = cur.fetchone() is not None
+    conn.close()
+    return hit
+
+
+def mark_seen(source: str, raw_id: str):
+    conn = _db()
+    conn.execute("INSERT OR IGNORE INTO seen VALUES (?, ?)",
+                 (_key(source, raw_id), datetime.utcnow().isoformat()))
     conn.commit()
     conn.close()
+
+
+def is_new(source: str, raw_id: str) -> bool:
+    """처음 보는 건이면 기록하고 True, 이미 본 건이면 False"""
+    if was_seen(source, raw_id):
+        return False
+    mark_seen(source, raw_id)
     return True
+
+
+def meta_get(k: str):
+    conn = _db()
+    row = conn.execute("SELECT v FROM meta WHERE k=?", (k,)).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def meta_set(k: str, v: str):
+    conn = _db()
+    conn.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (k, v))
+    conn.commit()
+    conn.close()
 
 
 # ─────────────────────────────────────────────
@@ -347,9 +394,9 @@ def tg_send(text: str):
         print("[TG 발송 실패]", e)
 
 
-def alert(emoji, source, title, keyword, date, url, detail):
+def alert(emoji, source, title, keyword, date, url, detail, label="새 공시"):
     tg_send(
-        f"{emoji} <b>[{source}] 새 공시</b>\n\n"
+        f"{emoji} <b>[{source}] {label}</b>\n\n"
         f"📅 {date}\n"
         f"🏢 키워드: <b>{keyword}</b>\n"
         f"📌 {title}\n\n"
@@ -367,43 +414,102 @@ def match_korean(text: str):
 # ─────────────────────────────────────────────
 # 1. ClinicalTrials.gov
 # ─────────────────────────────────────────────
-def run_clinicaltrials(cutoff_date: str) -> tuple[int, int]:
-    url = "https://clinicaltrials.gov/api/v2/studies"
-    params = {"sort": "LastUpdatePostDate:desc", "pageSize": 100, "format": "json"}
-    scanned = matched = 0
-    token = None
+CT_URL = "https://clinicaltrials.gov/api/v2/studies"
+CT_PAGE_SIZE = 1000   # API 최대값
+CT_MAX_PAGES = 50     # 최대 5만 건 — 사실상 무제한
+CT_V4_FLAG = "ct_v4_seeded"
 
-    for _ in range(30):
-        if token:
-            params["pageToken"] = token
-        r = requests.get(url, params=params, headers=UA, timeout=30)
-        r.raise_for_status()
-        data = r.json()
+
+def _ct_get(params: dict) -> dict:
+    r = requests.get(CT_URL, params=params, headers=UA, timeout=60)
+    r.raise_for_status()
+    return r.json()
+
+
+def run_clinicaltrials(cutoff_date: str, warnings: list) -> tuple[int, int]:
+    """
+    cutoff_date(YYYY-MM-DD) 이후 LastUpdatePostDate를 가진 임상을 전수 스캔.
+    중복 제거 키 = NCT + 최종 업데이트 게시일 → 같은 임상의 후속 변경도 알림.
+    """
+    base = {
+        "sort": "LastUpdatePostDate:desc",
+        "pageSize": CT_PAGE_SIZE,
+        "format": "json",
+        "countTotal": "true",
+        # API 단계에서 날짜 필터 → 페이지 상한에 걸려 잘리는 문제 방지
+        "filter.advanced": f"AREA[LastUpdatePostDate]RANGE[{cutoff_date},MAX]",
+        # 결과(resultsSection) 등을 빼서 응답 크기 축소 — 키워드 매칭엔 protocolSection이면 충분
+        "fields": "protocolSection",
+    }
+
+    # 일부 파라미터가 거부되면(400) 단계적으로 빼고 재시도 — 기존 방식으로 자동 후퇴
+    attempts = [
+        dict(base),
+        {k: v for k, v in base.items() if k != "fields"},
+        {k: v for k, v in base.items() if k not in ("fields", "filter.advanced")},
+    ]
+    data = None
+    params = None
+    for p in attempts:
+        try:
+            data = _ct_get(p)
+            params = p
+            break
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 400:
+                continue
+            raise
+    if data is None:
+        raise RuntimeError("CT.gov API가 모든 파라미터 조합을 거부함")
+    if "filter.advanced" not in params:
+        warnings.append("CT.gov 날짜 필터 미지원 → 기존 방식으로 스캔")
+
+    # v3 → v4 전환 첫 실행: v3에서 이미 알린 NCT는 조용히 기준선 등록
+    seeding = meta_get(CT_V4_FLAG) is None
+    seeded_silently = 0
+
+    total = data.get("totalCount")
+    scanned = matched = 0
+    pages = 0
+    truncated = False
+
+    while True:
+        pages += 1
         studies = data.get("studies", [])
         if not studies:
             break
 
         stop = False
         for s in studies:
-            scanned += 1
-            upd = (
-                s.get("protocolSection", {})
-                .get("statusModule", {})
-                .get("lastUpdatePostDateStruct", {})
-                .get("date", "")
-            )
+            ps = s.get("protocolSection", {})
+            status_mod = ps.get("statusModule", {})
+            upd = status_mod.get("lastUpdatePostDateStruct", {}).get("date", "")
+
+            # 날짜 필터가 적용 안 된 후퇴 모드일 때만 필요한 안전장치
             if upd and upd < cutoff_date:
                 stop = True
                 break
+            scanned += 1
 
             kw = match_korean(json.dumps(s, ensure_ascii=False))
             if not kw:
                 continue
 
-            ps = s.get("protocolSection", {})
             nct = ps.get("identificationModule", {}).get("nctId", "")
-            if not nct or not is_new("ct", nct):
+            if not nct:
                 continue
+
+            dedup_id = f"{nct}:{upd}"
+            if was_seen("ct", dedup_id):
+                continue
+
+            if seeding and was_seen("ct", nct):
+                # v3 키(NCT 단독)로 이미 알림이 나간 건 → 알림 없이 기준선만 등록
+                mark_seen("ct", dedup_id)
+                seeded_silently += 1
+                continue
+
+            mark_seen("ct", dedup_id)
 
             title = ps.get("identificationModule", {}).get("briefTitle", "N/A")
             sponsor = (
@@ -411,14 +517,25 @@ def run_clinicaltrials(cutoff_date: str) -> tuple[int, int]:
                 .get("leadSponsor", {})
                 .get("name", "N/A")
             )
-            status = ps.get("statusModule", {}).get("overallStatus", "N/A")
+            status = status_mod.get("overallStatus", "N/A")
             phases = ", ".join(ps.get("designModule", {}).get("phases", []) or ["N/A"])
             conds = ", ".join(ps.get("conditionsModule", {}).get("conditions", [])[:3])
+            first_post = status_mod.get("studyFirstPostDateStruct", {}).get("date", "")
+
+            is_first = bool(first_post) and first_post == upd
+            label = "신규 등록" if is_first else "등록정보 변경"
+            emoji = "🆕" if is_first else "🧪"
+            history = (
+                "" if is_first
+                else f"\n📜 <a href=\"https://clinicaltrials.gov/study/{nct}?tab=history\">변경 이력 보기</a>"
+            )
 
             alert(
-                "🧪", "ClinicalTrials.gov", title, kw, upd,
+                emoji, "ClinicalTrials.gov", title, kw, upd,
                 f"https://clinicaltrials.gov/study/{nct}",
-                f"[{phases}] {conds}\n스폰서: {sponsor} | 상태: {status}",
+                f"[{phases}] {conds}\n스폰서: {sponsor} | 상태: {status}\n"
+                f"NCT: {nct} | 최초 게시: {first_post or 'N/A'}{history}",
+                label=label,
             )
             matched += 1
 
@@ -427,6 +544,27 @@ def run_clinicaltrials(cutoff_date: str) -> tuple[int, int]:
         token = data.get("nextPageToken")
         if not token:
             break
+        if pages >= CT_MAX_PAGES:
+            truncated = True
+            break
+        params = dict(params, pageToken=token)
+        data = _ct_get(params)
+
+    if truncated:
+        warnings.append(
+            f"CT.gov 페이지 상한({CT_MAX_PAGES * CT_PAGE_SIZE:,}건) 도달 — 일부 미스캔 가능"
+        )
+    if isinstance(total, int) and "filter.advanced" in params and scanned < total and not truncated:
+        warnings.append(f"CT.gov 스캔 {scanned:,}건 < 전체 {total:,}건")
+
+    if seeding:
+        meta_set(CT_V4_FLAG, datetime.utcnow().isoformat())
+        if seeded_silently:
+            tg_send(
+                f"🔧 <b>BioWatch v4 전환 완료</b>\n"
+                f"v3에서 이미 알림이 나간 {seeded_silently}건은 기준선으로 조용히 등록했습니다.\n"
+                f"이제부터 같은 임상의 후속 변경도 알림이 옵니다."
+            )
 
     return scanned, matched
 
@@ -497,9 +635,32 @@ def run_sec(start_date: str, end_date: str) -> tuple[int, int]:
     return scanned, matched
 
 
+
+
 # ─────────────────────────────────────────────
 # 3. CTIS (유럽 임상시험)
 # ─────────────────────────────────────────────
+def _ctis_items(rss_text: str) -> list[tuple[str, str]]:
+    """
+    RSS에서 (EUCT 번호, 게시시각) 목록 추출.
+    같은 임상의 새 업데이트는 게시시각이 달라 다시 잡힘.
+    <item> 구조를 못 찾으면 EUCT 번호만으로 후퇴.
+    """
+    items = re.findall(r"<item\b.*?</item>", rss_text, flags=re.S)
+    out = []
+    if items:
+        for it in items:
+            m = re.search(r"EUCT=([\d-]+)", it)
+            if not m:
+                continue
+            pd = re.search(r"<pubDate>(.*?)</pubDate>", it, flags=re.S)
+            out.append((m.group(1), pd.group(1).strip() if pd else ""))
+    else:
+        out = [(e, "") for e in re.findall(r"EUCT=([\d-]+)", rss_text)]
+    # (EUCT, 게시시각) 조합 기준 중복 제거, 순서 유지
+    return list(dict.fromkeys(out))
+
+
 def run_ctis() -> tuple[int, int]:
     rss_url = "https://euclinicaltrials.eu/ctis-public-api/rss/updates.rss"
     scanned = matched = 0
@@ -510,11 +671,13 @@ def run_ctis() -> tuple[int, int]:
         tg_send(f"🚨 CTIS RSS 응답 {r.status_code}")
         return 0, 0
 
-    ids = re.findall(r"EUCT=([\d-]+)", r.text)
-    ids = list(dict.fromkeys(ids))[:60]
+    items = _ctis_items(r.text)[:60]
 
-    for euct in ids:
+    for euct, pubdate in items:
         scanned += 1
+        dedup_id = f"{euct}:{pubdate}" if pubdate else euct
+        if was_seen("ctis", dedup_id):
+            continue
         try:
             d = requests.get(
                 f"https://euclinicaltrials.eu/ctis-public-api/retrieve/{euct}",
@@ -525,8 +688,11 @@ def run_ctis() -> tuple[int, int]:
             kw = match_korean(d.text)
             if not kw:
                 continue
-            if not is_new("ctis", euct):
-                continue
+
+            # v3 키(EUCT 단독)로 이미 본 임상이면 '변경', 아니면 '신규'
+            label = "업데이트" if was_seen("ctis", euct) else "새 공시"
+            mark_seen("ctis", dedup_id)
+            mark_seen("ctis", euct)
 
             try:
                 j = d.json()
@@ -536,9 +702,10 @@ def run_ctis() -> tuple[int, int]:
 
             alert(
                 "🇪🇺", "CTIS (유럽)", title, kw,
-                datetime.utcnow().strftime("%Y-%m-%d"),
+                pubdate or datetime.utcnow().strftime("%Y-%m-%d"),
                 f"https://euclinicaltrials.eu/search-for-clinical-trials/?lang=en&EUCT={euct}",
                 f"EUCT 번호: {euct}",
+                label=label,
             )
             matched += 1
             time.sleep(0.3)
@@ -558,16 +725,21 @@ def main():
                     help="매칭 0건이면 요약도 보내지 않음")
     args = ap.parse_args()
 
+    started = time.time()
     now = datetime.utcnow()
     cutoff = (now - timedelta(hours=args.hours)).strftime("%Y-%m-%d")
+    # CT.gov 날짜는 미 동부시간 기준 + 예약 실행 누락 대비 → 하루 더 넉넉히 조회
+    # (중복 제거가 NCT+날짜 기준이라 범위를 넓혀도 중복 알림은 없음)
+    ct_cutoff = (now - timedelta(hours=args.hours) - timedelta(days=1)).strftime("%Y-%m-%d")
     today = now.strftime("%Y-%m-%d")
 
-    print(f"[BioWatch v3] 시작 {now.isoformat()} UTC / lookback {args.hours}h "
-          f"(cutoff {cutoff}) / 키워드 {len(KOREAN_KEYWORDS)}개")
+    print(f"[BioWatch v4] 시작 {now.isoformat()} UTC / lookback {args.hours}h "
+          f"(cutoff {cutoff}, CT cutoff {ct_cutoff}) / 키워드 {len(KOREAN_KEYWORDS)}개")
     results = {}
+    warnings: list[str] = []
 
     for name, fn in [
-        ("ClinicalTrials", lambda: run_clinicaltrials(cutoff)),
+        ("ClinicalTrials", lambda: run_clinicaltrials(ct_cutoff, warnings)),
         ("SEC", lambda: run_sec(cutoff, today)),
         ("CTIS", lambda: run_ctis()),
     ]:
@@ -582,17 +754,25 @@ def main():
             results[name] = (0, 0)
 
     total = sum(m for _, m in results.values())
+    elapsed = time.time() - started
+    kst = now + KST
 
     # 0건이어도 요약 발송 — 메시지가 아예 안 오면 그때만 고장
-    if total > 0 or not args.quiet:
-        lines = [f"📊 <b>BioWatch 스캔 결과</b> ({now.strftime('%m-%d %H:%M')} UTC)\n"]
+    if total > 0 or warnings or not args.quiet:
+        lines = [
+            f"📊 <b>BioWatch 스캔 결과</b> "
+            f"({now.strftime('%m-%d %H:%M')} UTC / {kst.strftime('%H:%M')} KST)\n"
+        ]
         for k, (s, m) in results.items():
-            lines.append(f"• {k}: {s}건 스캔 → <b>{m}건</b> 알림")
+            lines.append(f"• {k}: {s:,}건 스캔 → <b>{m}건</b> 알림")
         if total == 0:
             lines.append("\n신규 매칭 없음 (정상 동작)")
+        for w in warnings:
+            lines.append(f"⚠️ {w}")
+        lines.append(f"\n⏱ 소요 {elapsed:.0f}초")
         tg_send("\n".join(lines))
 
-    print(f"[BioWatch v3] 완료. 총 {total}건 알림.")
+    print(f"[BioWatch v4] 완료. 총 {total}건 알림. ({elapsed:.0f}초)")
     return 0
 
 
