@@ -1,8 +1,10 @@
 name: BioWatch — 한국 바이오/제약 공시 추적
 
 on:
+  # 예비용 — GitHub가 부하 시 자주 건너뛰므로 주 트리거는 외부 호출(cron-job.org)
   schedule:
     - cron: '17 * * * *'
+  # cron-job.org가 매시간 이 트리거를 호출 (수동 실행도 가능)
   workflow_dispatch:
     inputs:
       hours:
@@ -10,17 +12,23 @@ on:
         required: false
         default: '2'
 
+# 외부 호출과 예약 실행이 겹쳐도 동시에 돌지 않고 순서대로 실행
+# (seen.db 캐시가 엇갈려 중복 알림이 나가는 것 방지)
+concurrency:
+  group: biowatch
+  cancel-in-progress: false
+
 jobs:
   watch:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
 
     steps:
       - name: 코드 체크아웃
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Python 설정
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -29,7 +37,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: 캐시 복원 (seen.db)
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: data/seen.db
           key: biowatch-seen-db-${{ github.run_id }}
@@ -45,15 +53,18 @@ jobs:
 
       - name: 캐시 저장 (seen.db)
         if: always()
-        uses: actions/cache@v4
+        uses: actions/cache/save@v4
         with:
           path: data/seen.db
           key: biowatch-seen-db-${{ github.run_id }}
+
   keep-alive:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'schedule'
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
       - name: 30일마다 빈 커밋으로 액션 유지
