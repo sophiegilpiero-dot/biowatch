@@ -1,7 +1,20 @@
 """
-BioWatch v4 — 한국 바이오/제약 공시 추적 (단일 파일)
+BioWatch v4.2 — 한국 바이오/제약 공시 추적 (단일 파일)
 소스: ClinicalTrials.gov / SEC EDGAR / CTIS(유럽)
 사용법: python main.py --hours 48
+
+v4.2 변경사항
+  - [중요] 텔레그램 발송 실패를 더 이상 조용히 넘기지 않음
+           → 응답 코드 확인, 실패 사유를 로그에 출력
+           → HTML 파싱 오류(400) 시 서식 없는 일반 텍스트로 자동 재발송
+  - 제목·스폰서·오류 메시지의 &, <, > 를 이스케이프 (예: 'Merck Sharp & Dohme',
+    파이썬 오류의 '<module>' 때문에 알림·오류 메시지가 통째로 사라지던 문제)
+
+v4.1 변경사항
+  - v3→v4 전환용 '기준선 등록' 로직 제거 (전환 완료됨 — 첫 실행 때 기존 임상의 새 변경까지 묻히던 문제 해소)
+  - 직전 실행과의 간격을 기록해, GitHub 예약 실행이 누락되면 요약에 경고 표시
+  - 실행 간격이 벌어지면 조회 범위(--hours)를 자동으로 넓혀 누락 구간을 메움
+  - 요약 메시지에 실행 방식(예약/외부 호출/수동) 표시
 
 v4 변경사항
   - [중요] CT.gov 중복 제거 키를 'NCT 번호' → 'NCT 번호 + 최종 업데이트 게시일'로 변경
@@ -24,6 +37,7 @@ v3 변경사항
 """
 import argparse
 import hashlib
+import html
 import json
 import os
 import re
@@ -375,33 +389,54 @@ def meta_set(k: str, v: str):
 # ─────────────────────────────────────────────
 # 텔레그램
 # ─────────────────────────────────────────────
-def tg_send(text: str):
+def _strip_tags(text: str) -> str:
+    """HTML 태그를 지우고 엔티티를 원래 문자로 되돌림 (일반 텍스트 재발송용)"""
+    return html.unescape(re.sub(r"<[^>]+>", "", text))
+
+
+def tg_send(text: str) -> bool:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("[TG 미설정]", text[:200])
-        return
+        print("[TG 미설정] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 시크릿 확인 필요")
+        print(text[:200])
+        return False
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text[:4000],
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
     try:
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": text,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True,
-            },
-            timeout=10,
-        )
+        r = requests.post(url, json=payload, timeout=15)
+        if r.ok:
+            return True
+        print(f"[TG 발송 실패] {r.status_code} {r.text[:300]}")
+        if r.status_code == 400:
+            # HTML 파싱 오류 등 → 서식 없이 재발송
+            plain = {"chat_id": TELEGRAM_CHAT_ID,
+                     "text": _strip_tags(text)[:4000],
+                     "disable_web_page_preview": True}
+            r2 = requests.post(url, json=plain, timeout=15)
+            if r2.ok:
+                print("[TG] 일반 텍스트로 재발송 성공")
+                return True
+            print(f"[TG 재발송 실패] {r2.status_code} {r2.text[:300]}")
+        return False
     except Exception as e:
-        print("[TG 발송 실패]", e)
+        print("[TG 발송 예외]", e)
+        return False
 
 
 def alert(emoji, source, title, keyword, date, url, detail, label="새 공시"):
+    """title·keyword·date는 이스케이프. detail은 호출부에서 이스케이프된 HTML을 넘김"""
+    e = html.escape
     tg_send(
-        f"{emoji} <b>[{source}] {label}</b>\n\n"
-        f"📅 {date}\n"
-        f"🏢 키워드: <b>{keyword}</b>\n"
-        f"📌 {title}\n\n"
+        f"{emoji} <b>[{e(source)}] {e(label)}</b>\n\n"
+        f"📅 {e(str(date))}\n"
+        f"🏢 키워드: <b>{e(str(keyword))}</b>\n"
+        f"📌 {e(str(title))}\n\n"
         f"{detail}\n\n"
-        f"🔗 <a href=\"{url}\">원문 보기</a>"
+        f"🔗 <a href=\"{e(url, quote=True)}\">원문 보기</a>"
     )
 
 
@@ -417,7 +452,6 @@ def match_korean(text: str):
 CT_URL = "https://clinicaltrials.gov/api/v2/studies"
 CT_PAGE_SIZE = 1000   # API 최대값
 CT_MAX_PAGES = 50     # 최대 5만 건 — 사실상 무제한
-CT_V4_FLAG = "ct_v4_seeded"
 
 
 def _ct_get(params: dict) -> dict:
@@ -464,10 +498,6 @@ def run_clinicaltrials(cutoff_date: str, warnings: list) -> tuple[int, int]:
     if "filter.advanced" not in params:
         warnings.append("CT.gov 날짜 필터 미지원 → 기존 방식으로 스캔")
 
-    # v3 → v4 전환 첫 실행: v3에서 이미 알린 NCT는 조용히 기준선 등록
-    seeding = meta_get(CT_V4_FLAG) is None
-    seeded_silently = 0
-
     total = data.get("totalCount")
     scanned = matched = 0
     pages = 0
@@ -503,12 +533,6 @@ def run_clinicaltrials(cutoff_date: str, warnings: list) -> tuple[int, int]:
             if was_seen("ct", dedup_id):
                 continue
 
-            if seeding and was_seen("ct", nct):
-                # v3 키(NCT 단독)로 이미 알림이 나간 건 → 알림 없이 기준선만 등록
-                mark_seen("ct", dedup_id)
-                seeded_silently += 1
-                continue
-
             mark_seen("ct", dedup_id)
 
             title = ps.get("identificationModule", {}).get("briefTitle", "N/A")
@@ -533,7 +557,8 @@ def run_clinicaltrials(cutoff_date: str, warnings: list) -> tuple[int, int]:
             alert(
                 emoji, "ClinicalTrials.gov", title, kw, upd,
                 f"https://clinicaltrials.gov/study/{nct}",
-                f"[{phases}] {conds}\n스폰서: {sponsor} | 상태: {status}\n"
+                f"[{html.escape(phases)}] {html.escape(conds)}\n"
+                f"스폰서: {html.escape(sponsor)} | 상태: {html.escape(status)}\n"
                 f"NCT: {nct} | 최초 게시: {first_post or 'N/A'}{history}",
                 label=label,
             )
@@ -556,15 +581,6 @@ def run_clinicaltrials(cutoff_date: str, warnings: list) -> tuple[int, int]:
         )
     if isinstance(total, int) and "filter.advanced" in params and scanned < total and not truncated:
         warnings.append(f"CT.gov 스캔 {scanned:,}건 < 전체 {total:,}건")
-
-    if seeding:
-        meta_set(CT_V4_FLAG, datetime.utcnow().isoformat())
-        if seeded_silently:
-            tg_send(
-                f"🔧 <b>BioWatch v4 전환 완료</b>\n"
-                f"v3에서 이미 알림이 나간 {seeded_silently}건은 기준선으로 조용히 등록했습니다.\n"
-                f"이제부터 같은 임상의 후속 변경도 알림이 옵니다."
-            )
 
     return scanned, matched
 
@@ -627,7 +643,7 @@ def run_sec(start_date: str, end_date: str) -> tuple[int, int]:
             )
 
             alert("📋", "SEC EDGAR", f"[{form}] {names}", kw, fdate, furl,
-                  f"공시유형: {form}\n접수번호: {adsh}")
+                  f"공시유형: {html.escape(str(form))}\n접수번호: {html.escape(str(adsh))}")
             matched += 1
 
         time.sleep(0.5)
@@ -704,7 +720,7 @@ def run_ctis() -> tuple[int, int]:
                 "🇪🇺", "CTIS (유럽)", title, kw,
                 pubdate or datetime.utcnow().strftime("%Y-%m-%d"),
                 f"https://euclinicaltrials.eu/search-for-clinical-trials/?lang=en&EUCT={euct}",
-                f"EUCT 번호: {euct}",
+                f"EUCT 번호: {html.escape(euct)}",
                 label=label,
             )
             matched += 1
@@ -727,16 +743,35 @@ def main():
 
     started = time.time()
     now = datetime.utcnow()
-    cutoff = (now - timedelta(hours=args.hours)).strftime("%Y-%m-%d")
-    # CT.gov 날짜는 미 동부시간 기준 + 예약 실행 누락 대비 → 하루 더 넉넉히 조회
+    warnings: list[str] = []
+
+    # 직전 실행과의 간격 확인 — GitHub 예약 실행 누락 감지 + 조회 범위 자동 확장
+    hours = args.hours
+    last_run = meta_get("last_run_utc")
+    if last_run:
+        try:
+            gap_h = (now - datetime.fromisoformat(last_run)).total_seconds() / 3600
+            if gap_h > 2.5:
+                warnings.append(f"직전 실행 후 {gap_h:.1f}시간 경과 (예약 실행 누락 추정)")
+                hours = max(hours, int(gap_h) + 2)
+        except ValueError:
+            pass
+
+    cutoff = (now - timedelta(hours=hours)).strftime("%Y-%m-%d")
+    # CT.gov 날짜는 미 동부시간 기준 → 하루 더 넉넉히 조회
     # (중복 제거가 NCT+날짜 기준이라 범위를 넓혀도 중복 알림은 없음)
-    ct_cutoff = (now - timedelta(hours=args.hours) - timedelta(days=1)).strftime("%Y-%m-%d")
+    ct_cutoff = (now - timedelta(hours=hours) - timedelta(days=1)).strftime("%Y-%m-%d")
     today = now.strftime("%Y-%m-%d")
 
-    print(f"[BioWatch v4] 시작 {now.isoformat()} UTC / lookback {args.hours}h "
+    trigger = {
+        "schedule": "예약",
+        "workflow_dispatch": "외부 호출/수동",
+        "repository_dispatch": "외부 호출",
+    }.get(os.environ.get("GITHUB_EVENT_NAME", ""), "로컬")
+
+    print(f"[BioWatch v4.1] 시작 {now.isoformat()} UTC ({trigger}) / lookback {hours}h "
           f"(cutoff {cutoff}, CT cutoff {ct_cutoff}) / 키워드 {len(KOREAN_KEYWORDS)}개")
     results = {}
-    warnings: list[str] = []
 
     for name, fn in [
         ("ClinicalTrials", lambda: run_clinicaltrials(ct_cutoff, warnings)),
@@ -750,8 +785,10 @@ def main():
         except Exception:
             err = traceback.format_exc()
             print(f"  {name}: 오류\n{err}")
-            tg_send(f"🚨 <b>[BioWatch 오류] {name}</b>\n{err[:400]}")
+            tg_send(f"🚨 <b>[BioWatch 오류] {name}</b>\n<pre>{html.escape(err[-1500:])}</pre>")
             results[name] = (0, 0)
+
+    meta_set("last_run_utc", now.isoformat())
 
     total = sum(m for _, m in results.values())
     elapsed = time.time() - started
@@ -761,18 +798,18 @@ def main():
     if total > 0 or warnings or not args.quiet:
         lines = [
             f"📊 <b>BioWatch 스캔 결과</b> "
-            f"({now.strftime('%m-%d %H:%M')} UTC / {kst.strftime('%H:%M')} KST)\n"
+            f"({now.strftime('%m-%d %H:%M')} UTC / {kst.strftime('%H:%M')} KST · {trigger})\n"
         ]
-        for k, (s, m) in results.items():
-            lines.append(f"• {k}: {s:,}건 스캔 → <b>{m}건</b> 알림")
+        for k, (s_, m) in results.items():
+            lines.append(f"• {k}: {s_:,}건 스캔 → <b>{m}건</b> 알림")
         if total == 0:
             lines.append("\n신규 매칭 없음 (정상 동작)")
         for w in warnings:
-            lines.append(f"⚠️ {w}")
-        lines.append(f"\n⏱ 소요 {elapsed:.0f}초")
+            lines.append(f"⚠️ {html.escape(w)}")
+        lines.append(f"\n⏱ 소요 {elapsed:.0f}초 · 조회범위 {hours}시간")
         tg_send("\n".join(lines))
 
-    print(f"[BioWatch v4] 완료. 총 {total}건 알림. ({elapsed:.0f}초)")
+    print(f"[BioWatch v4.1] 완료. 총 {total}건 알림. ({elapsed:.0f}초)")
     return 0
 
 
