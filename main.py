@@ -409,8 +409,9 @@ def tg_send(text: str) -> bool:
     try:
         r = requests.post(url, json=payload, timeout=15)
         if r.ok:
-            return True
-        print(f"[TG 발송 실패] {r.status_code} {r.text[:300]}")
+            chat = r.json().get("result", {}).get("chat", {})
+            print(f"[TG 발송 성공] → {chat.get('title') or chat.get('first_name')} (id {chat.get('id')})")
+            return True        print(f"[TG 발송 실패] {r.status_code} {r.text[:300]}")
         if r.status_code == 400:
             # HTML 파싱 오류 등 → 서식 없이 재발송
             plain = {"chat_id": TELEGRAM_CHAT_ID,
