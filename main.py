@@ -1,7 +1,11 @@
 """
-BioWatch v4.2 — 한국 바이오/제약 공시 추적 (단일 파일)
+BioWatch v4.3 — 한국 바이오/제약 공시 추적 (단일 파일)
 소스: ClinicalTrials.gov / SEC EDGAR / CTIS(유럽)
 사용법: python main.py --hours 48
+
+v4.3 변경사항
+  - 텔레그램 발송 성공 시 실제 받은 대화방 이름·ID를 로그에 기록
+  - 로그 출력 버전 표기 수정
 
 v4.2 변경사항
   - [중요] 텔레그램 발송 실패를 더 이상 조용히 넘기지 않음
@@ -410,8 +414,10 @@ def tg_send(text: str) -> bool:
         r = requests.post(url, json=payload, timeout=15)
         if r.ok:
             chat = r.json().get("result", {}).get("chat", {})
-            print(f"[TG 발송 성공] → {chat.get('title') or chat.get('first_name')} (id {chat.get('id')})")
-            return True        print(f"[TG 발송 실패] {r.status_code} {r.text[:300]}")
+            name = chat.get("title") or chat.get("first_name") or chat.get("username")
+            print(f"[TG 발송 성공] → {name} (id {chat.get('id')})")
+            return True
+        print(f"[TG 발송 실패] {r.status_code} {r.text[:300]}")
         if r.status_code == 400:
             # HTML 파싱 오류 등 → 서식 없이 재발송
             plain = {"chat_id": TELEGRAM_CHAT_ID,
@@ -770,7 +776,7 @@ def main():
         "repository_dispatch": "외부 호출",
     }.get(os.environ.get("GITHUB_EVENT_NAME", ""), "로컬")
 
-    print(f"[BioWatch v4.1] 시작 {now.isoformat()} UTC ({trigger}) / lookback {hours}h "
+    print(f"[BioWatch v4.3] 시작 {now.isoformat()} UTC ({trigger}) / lookback {hours}h "
           f"(cutoff {cutoff}, CT cutoff {ct_cutoff}) / 키워드 {len(KOREAN_KEYWORDS)}개")
     results = {}
 
@@ -810,7 +816,7 @@ def main():
         lines.append(f"\n⏱ 소요 {elapsed:.0f}초 · 조회범위 {hours}시간")
         tg_send("\n".join(lines))
 
-    print(f"[BioWatch v4.1] 완료. 총 {total}건 알림. ({elapsed:.0f}초)")
+    print(f"[BioWatch v4.3] 완료. 총 {total}건 알림. ({elapsed:.0f}초)")
     return 0
 
 
